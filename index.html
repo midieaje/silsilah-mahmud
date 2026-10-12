@@ -81,6 +81,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .card .up{position:absolute;right:8px;top:24px;font-size:14px;color:var(--mute);line-height:1;cursor:pointer}
 .card .qb{position:absolute;left:6px;width:26px;height:26px;padding:0;border:1px solid var(--hair);border-radius:8px;background:rgba(255,255,255,.85);color:var(--accent);font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center}
 .card .qa{top:6px}.card .qd{top:36px}
+.card .qx{left:auto;right:6px;top:auto;bottom:6px;font-size:16px;font-weight:700}
 .card .qb:hover{background:var(--accent);border-color:var(--accent);color:#fff}
 .card .qb.on{background:var(--ring);border-color:var(--ring);color:#fff}
 .legend{font-size:12px;color:var(--mute);white-space:nowrap}
@@ -226,7 +227,7 @@ form .seg-o{flex:1;margin:0;font-weight:500;font-size:14px;position:relative;cur
       <div class="nav"><button class="btn sm" id="nav-btn" aria-haspopup="true" aria-expanded="false"><span id="nav-label">Seluruh keluarga</span> ▾</button><div id="nav-panel" class="navpanel" hidden role="menu"></div></div>
       <button class="btn sm" id="back-all" hidden>← Seluruh keluarga</button>
       <input id="search" type="search" placeholder="Cari nama…" aria-label="Cari nama">
-      <span class="legend" title="Tombol kecil di sisi kiri tiap kartu">▲ keluarga 1 level · ▼ keturunan</span>
+      <span class="legend" title="Tombol kecil di tiap kartu">▲ keluarga 1 level · ▼ keturunan · + pasangan &amp; anak</span>
       <span class="spacer"></span>
       <button class="btn icon-btn" id="z-out" title="Perkecil" aria-label="Perkecil">−</button>
       <button class="btn icon-btn" id="z-in" title="Perbesar" aria-label="Perbesar">+</button>
@@ -294,7 +295,7 @@ function newCode() {
 const STATUS = { menikah: 'Menikah', cerai: 'Bercerai', wafat: 'Pasangan wafat' };
 
 /* ---------- State ---------- */
-const state = { orang: [], nikah: [], role: 'view', mode: 'demo', pw: '', focus: 'all', zoom: 1, fit: true, hit: new Set(), q: '' };
+const state = { orang: [], nikah: [], role: 'view', mode: 'demo', pw: '', focus: 'all', zoom: 1, fit: true, hit: new Set(), q: '', exp: new Set() };
 let IDX = {}, POS = {}, DIM = { w: 0, h: 0 };
 
 function reindex() {
@@ -459,6 +460,8 @@ function topAncestors(id) {
   return tops;
 }
 
+const hasRel = id => (IDX.marr.get(id) || []).some(m => (m.p1 === id ? m.p2 : m.p1) || (IDX.kids.get(m.id) || []).length);
+
 function layout(focus = state.focus) {
   const placed = new Set(), units = [];
   // Mode "keluarga asal" / "keluarga dekat": pasangan orang lain tidak ikut diperluas
@@ -475,11 +478,12 @@ function layout(focus = state.focus) {
   }
 
   function layoutUnit(entry, gen, opt = {}) {
+    if (opt.mode === 'leaf' && state.exp.has(entry)) opt = { mode: 'open' };   // dibuka lewat tombol +
     placed.add(entry);
     const kids = {}, bfs = [entry], depth = { [entry]: 0 };
     for (let i = 0; i < bfs.length; i++) {
       const id = bfs[i];
-      if (limited && depth[id] >= 1) continue;
+      if (limited && depth[id] >= (opt.mode === 'top' ? 2 : 1)) continue;
       if (opt.mode === 'leaf') continue;
       for (const m of IDX.marr.get(id) || []) {
         const o = m.p1 === id ? m.p2 : m.p1;
@@ -513,7 +517,7 @@ function layout(focus = state.focus) {
     const seen = new Set(), groups = [];
     order.forEach(id => (IDX.marr.get(id) || []).forEach(m => {
       if (seen.has(m.id)) return; seen.add(m.id);
-      if (opt.mode === 'leaf' || (opt.mode === 'top' && m.id !== opt.parId)) return;
+      if (opt.mode === 'leaf' || (opt.mode === 'top' && !opt.parents.has(m.p1) && !opt.parents.has(m.p2))) return;
       if (limited && m.p1 !== entry && m.p2 !== entry && !(order.includes(m.p1) && order.includes(m.p2))) return;
       const a = order.indexOf(m.p1), b = m.p2 ? order.indexOf(m.p2) : -1;
       if (a >= 0 && b >= 0) {
@@ -527,7 +531,7 @@ function layout(focus = state.focus) {
     groups.sort((x, y) => x.jx - y.jx || x.level - y.level);
     groups.forEach((g, i) => { g.color = groups.length > 1 ? PAL[i % PAL.length] : null; });
 
-    const unit = { entry, gen, order, xc, R, groups, maxLevel: 0 };
+    const unit = { entry, gen, order, xc, R, groups, maxLevel: 0, leaf: opt.mode === 'leaf', open: opt.mode === 'open' };
     units.push(unit);
     if (opt.mode === 'self') selfUnit = unit;
     groups.forEach(g => {
@@ -540,7 +544,7 @@ function layout(focus = state.focus) {
           if (genOf[k.id] === gen + 1) g.links.push(k.id); else g.units.push(ghostUnit(k.id, gen + 1));
           return;
         }
-        const co = opt.mode === 'top' ? { mode: k.id === near ? 'self' : 'leaf' } : (near && opt.mode === 'self' ? { mode: 'leaf' } : {});
+        const co = opt.mode === 'top' ? { mode: k.id === near ? 'self' : 'leaf' } : (near && (opt.mode === 'self' || opt.mode === 'open') ? { mode: 'leaf' } : {});
         g.units.push(layoutUnit(k.id, gen + 1, co));
       });
       g.width = g.units.reduce((s, u) => s + u.width, 0) + UG * Math.max(0, g.units.length - 1);
@@ -587,7 +591,12 @@ function layout(focus = state.focus) {
   } else if (near) {
     const c = IDX.p.get(near), pm = c && IDX.m.get(c.parent_nikah_id);
     const topOf = m => m && [m.p1, m.p2].find(x => x && IDX.p.has(x));
-    const mkTop = m => layoutUnit(topOf(m), 0, { mode: 'top', allow: new Set([m.p1, m.p2]), parId: m.id });
+    // Blok orang tua: orang tua + pasangan lain mereka, sehingga anak-anak dari pernikahan lain (saudara tiri) ikut tampil
+    const mkTop = m => {
+      const ps = [m.p1, m.p2].filter(x => x && IDX.p.has(x)), allow = new Set(ps);
+      ps.forEach(pid => (IDX.marr.get(pid) || []).forEach(mm => { const o = mm.p1 === pid ? mm.p2 : mm.p1; if (o && IDX.p.has(o)) allow.add(o); }));
+      return layoutUnit(topOf(m), 0, { mode: 'top', allow, parents: new Set(ps), parId: m.id });
+    };
     // pasangan yang orang tuanya tercatat
     const spouses = [...new Set((IDX.marr.get(near) || []).map(m => m.p1 === near ? m.p2 : m.p1).filter(x => x && IDX.p.has(x)))];
     const spPar = spouses.map(id => ({ id, m: IDX.m.get(IDX.p.get(id).parent_nikah_id) })).filter(x => x.m && topOf(x.m));
@@ -685,10 +694,12 @@ function render() {
       if (!u.ghost) POS[id] = { x: u.cx[id], y: y + CH / 2 };
       const par = IDX.m.get(p.parent_nikah_id);
       const up = !u.ghost && id !== u.entry && par ? `<span class="up" title="Anak dari ${esc(nm(par.p1))}${par.p2 ? ' &amp; ' + esc(nm(par.p2)) : ''}. Klik untuk melihat keluarga asal.">↖</span>` : '';
+      const qx = !u.ghost && id === u.entry && (u.leaf || u.open) && (u.open || hasRel(id))
+        ? `<button type="button" class="qb qx${u.open ? ' on' : ''}" data-q="exp" aria-expanded="${u.open}" aria-label="${u.open ? 'Sembunyikan' : 'Tampilkan'} pasangan dan anak ${esc(p.nama)}" title="${u.open ? 'Sembunyikan' : 'Tampilkan'} pasangan dan anak">${u.open ? '−' : '+'}</button>` : '';
       const ttl = u.ghost ? ' title="Orang ini ditampilkan di pohon pasangannya. Klik untuk membuka."' : '';
       cards += `<div class="card ${p.gender}${id !== u.entry ? ' spouse' : ''}${u.ghost ? ' ghost' : ''}${lc ? ' lin' : ''}${state.hit.has(id) ? ' hit' : ''}" data-id="${esc(id)}" style="left:${left}px;top:${y}px${lc ? ';--lc:' + lc : ''}" tabindex="0"${ttl}>
-        <button type="button" class="qb qa${state.focus === 'near:' + id ? ' on' : ''}" data-q="near" aria-label="Keluarga 1 level ${esc(p.nama)}" title="Keluarga 1 level: orang tua &amp; saudara, pasangan (beserta orang tua &amp; saudaranya), dan anak">▲</button><button type="button" class="qb qd${state.focus === id ? ' on' : ''}" data-q="desc" aria-label="Lihat keturunan ${esc(p.nama)}" title="Lihat keturunan ${esc(p.nama)}">▼</button>
-        ${up}<span class="gm" aria-hidden="true">${p.gender === 'P' ? '♀' : '♂'}</span><div class="ph">${photoHTML(p)}</div><div class="nm">${esc(p.nama)}</div><div class="yr">${u.ghost ? '↪ ada di pohon lain' : esc(lifeText(p))}</div></div>`;
+        <button type="button" class="qb qa${state.focus === 'near:' + id ? ' on' : ''}" data-q="near" aria-label="Keluarga 1 level ${esc(p.nama)}" title="Keluarga 1 level: orang tua, saudara kandung &amp; tiri, pasangan (beserta orang tua &amp; saudaranya), dan anak">▲</button><button type="button" class="qb qd${state.focus === id ? ' on' : ''}" data-q="desc" aria-label="Lihat keturunan ${esc(p.nama)}" title="Lihat keturunan ${esc(p.nama)}">▼</button>
+        ${qx}${up}<span class="gm" aria-hidden="true">${p.gender === 'P' ? '♀' : '♂'}</span><div class="ph">${photoHTML(p)}</div><div class="nm">${esc(p.nama)}</div><div class="yr">${u.ghost ? '↪ ada di pohon lain' : esc(lifeText(p))}</div></div>`;
     });
   });
   DIM = { w: L.width, h: L.height };
@@ -722,7 +733,9 @@ window.addEventListener('pointerup', () => { pan = null; vp.classList.remove('pa
 $('#cards').addEventListener('click', e => {
   const q = e.target.closest('.qb');            // tombol cepat ▲ / ▼ di kartu (tanpa membuka detail)
   if (q) {
-    const id = q.closest('.card').dataset.id, target = q.dataset.q === 'near' ? 'near:' + id : id;
+    const id = q.closest('.card').dataset.id;
+    if (q.dataset.q === 'exp') { if (state.exp.has(id)) state.exp.delete(id); else state.exp.add(id); render(); return; }   // buka/tutup pasangan & anak di tempat
+    const target = q.dataset.q === 'near' ? 'near:' + id : id;
     setFocus(state.focus === target ? 'all' : target);   // klik lagi pada tombol yang aktif = kembali ke seluruh keluarga
     return;
   }
@@ -798,7 +811,7 @@ $('#nav-panel').addEventListener('click', e => {
 document.addEventListener('click', e => { if (!e.target.closest('.nav')) toggleNav(false); });
 window.addEventListener('resize', () => toggleNav(false));
 function setFocus(v) {
-  state.focus = v; state.fit = true; state.hit = new Set(); $('#search').value = '';
+  state.focus = v; state.fit = true; state.hit = new Set(); state.exp.clear(); $('#search').value = '';
   const mm = v.match(/^(asal|near):(.+)$/); if (mm) state.hit.add(mm[2]);   // tandai orang yang sedang dilihat
   render(); $('#viewport').scrollTo(0, 0);
 }
@@ -899,7 +912,7 @@ function openPerson(id) {
   if (par) h += `<button class="btn sm" data-act="origin" data-id="${esc(id)}">Lihat keluarga asal</button>`;
   else if (ed) h += `<button class="btn sm" data-act="addParents" data-id="${esc(id)}">+ Orang tua</button>`;
   if (ed) h += `<button class="btn sm" data-act="addSiblings" data-id="${esc(id)}">+ Saudara</button>`;
-  h += `<button class="btn sm" data-act="near" data-id="${esc(id)}" title="Tampilkan orang tua &amp; saudara, pasangan (beserta orang tua &amp; saudaranya), dan anak-anaknya">Keluarga 1 level</button>`;
+  h += `<button class="btn sm" data-act="near" data-id="${esc(id)}" title="Tampilkan orang tua, saudara kandung &amp; tiri, pasangan (beserta orang tua &amp; saudaranya), dan anak-anaknya">Keluarga 1 level</button>`;
   h += `<button class="btn sm" data-act="focus" data-id="${esc(id)}">Lihat keturunan</button><span class="grow"></span>`;
   if (ed) h += `<button class="btn danger sm" data-act="del" data-id="${esc(id)}">Hapus</button>`;
   h += '</div>';
