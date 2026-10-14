@@ -114,6 +114,12 @@ code{background:#e3ece7;padding:2px 8px;border-radius:6px;font-weight:600;letter
 .rw .seg-o span{padding:7px 12px;min-width:46px}
 .rx{border:0;background:none;color:var(--mute);cursor:pointer;font-size:16px;padding:4px 8px;border-radius:8px}
 .rx:hover{background:#e6eee9}
+.dg{display:block;border:1px solid var(--hair);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff;cursor:pointer}
+.dg .dgh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-weight:600}
+.dg .dgl{font-size:13px;color:#3f4f4b;margin:6px 0 0 26px;font-weight:400}
+.dg .dgl div{padding:1px 0}
+.pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px}
+.pill.ok{background:#dcebd5;color:#2f5a1f}.pill.maybe{background:#f3e6c4;color:#7a5712}
 .note{background:#eef3ef;border-radius:10px;padding:10px 12px;font-size:13px;color:#3f4f4b;margin-bottom:12px}
 .card.hit{outline:3px solid var(--ring);outline-offset:2px}
 .ph{width:56px;height:56px;border-radius:50%;margin:0 auto 6px;overflow:hidden;background:#dbe4de;display:grid;place-items:center;
@@ -236,6 +242,7 @@ form .seg-o{flex:1;margin:0;font-weight:500;font-size:14px;position:relative;cur
       <button class="btn sm" id="reload" title="Muat ulang data dari Google Sheets">Muat ulang</button>
       <button class="btn sm" id="backup" title="Unduh cadangan data (.json)">Cadangan</button>
       <button class="btn sm" id="restore" title="Pulihkan data, atau gabungkan pohon keluarga lain dari file cadangannya (.json)" hidden>Pulihkan / Gabung</button>
+      <button class="btn sm" id="dups" title="Cari orang yang sama (nama sama) dan gabungkan sekaligus" hidden>Cari duplikat</button>
       <input type="file" id="restore-file" accept=".json,application/json" hidden>
       <span class="role" id="role"></span>
       <button class="btn sm" id="logout">Keluar</button>
@@ -271,6 +278,13 @@ const CONFIG = {
 };
 
 /* ---------- Util ---------- */
+// Penyimpanan sesi yang tetap aman bila browser memblokir sessionStorage (mis. saat disematkan di Google Sites)
+const MEM = {};
+const ss = {
+  get: k => { try { return sessionStorage.getItem(k); } catch (e) { return MEM[k] || null; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) { MEM[k] = v; } },
+  del: k => { try { sessionStorage.removeItem(k); } catch (e) { delete MEM[k]; } }
+};
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -382,7 +396,7 @@ async function loginRemote(pw) {
   const j = await api('login');
   state.role = j.role; state.mode = 'remote';
   state.orang = j.orang.map(normP); state.nikah = j.nikah.map(normM);
-  sessionStorage.setItem('ft_pw', pw);
+  ss.set('ft_pw', pw);
   enterApp();
 }
 function loginDemo() { state.mode = 'demo'; state.role = 'edit'; Demo.load(); enterApp(); }
@@ -393,6 +407,7 @@ function enterApp() {
   $('#add-person').hidden = state.role !== 'edit';
   $('#reload').hidden = state.mode !== 'remote';
   $('#restore').hidden = state.role !== 'edit';
+  $('#dups').hidden = state.role !== 'edit';
   state.fit = true; render();
 }
 $('#login-form').addEventListener('submit', async e => {
@@ -404,7 +419,7 @@ $('#login-form').addEventListener('submit', async e => {
   finally { b.disabled = false; b.textContent = 'Masuk'; }
 });
 $('#demo-btn').onclick = loginDemo;
-$('#logout').onclick = () => { sessionStorage.removeItem('ft_pw'); location.reload(); };
+$('#logout').onclick = () => { ss.del('ft_pw'); location.reload(); };
 $('#reload').onclick = async () => {
   try { const j = await api('getAll'); state.orang = j.orang.map(normP); state.nikah = j.nikah.map(normM); render(); toast('Data dimuat ulang'); }
   catch (e) { toast(e.message, true); }
@@ -435,7 +450,8 @@ $('#restore-file').onchange = e => {
       await commit([...ppl.map(row => ({ op: 'upsert', t: 'orang', row })), ...mar.map(row => ({ op: 'upsert', t: 'nikah', row }))]);
       state.fit = true; render();
       const linked = await autoLinkByCode(before);
-      render(); toast(`Berhasil memulihkan ${ppl.length} orang dan ${mar.length} pernikahan${linked ? `; ${linked} orang yang sama disatukan` : ''}`);
+      render(); const left = findDupGroups().length;
+      toast(`Berhasil memulihkan ${ppl.length} orang dan ${mar.length} pernikahan${linked ? `; ${linked} orang yang sama disatukan` : ''}${left ? `. Ada ${left} kemungkinan duplikat: klik "Cari duplikat"` : ''}`);
     } catch (err) { /* toast sudah tampil */ }
   };
   fr.readAsText(file);
@@ -1253,6 +1269,65 @@ function parentsForm(id) {
   setTimeout(() => { const i = $('#pr-ayah-n', m); if (i) i.focus(); }, 30);
 }
 
+/* ---------- Cari duplikat otomatis (nama sama) & gabungkan sekaligus ---------- */
+function genDepth(id, seen = new Set()) {
+  if (seen.has(id)) return 0; seen.add(id);
+  const pm = IDX.m.get((IDX.p.get(id) || {}).parent_nikah_id); if (!pm) return 0;
+  return 1 + Math.max(0, ...[pm.p1, pm.p2].filter(x => x && IDX.p.has(x)).map(x => genDepth(x, seen)));
+}
+function findDupGroups() {
+  reindex();
+  const by = new Map();
+  state.orang.forEach(p => { const k = normKey(p.nama) + '|' + p.gender; if (!by.has(k)) by.set(k, []); by.get(k).push(p); });
+  const weight = p => (IDX.marr.get(p.id) || []).length * 2 + (IDX.marr.get(p.id) || []).reduce((n, m) => n + (IDX.kids.get(m.id) || []).length, 0) + (p.foto ? 1 : 0) + (p.parent_nikah_id ? 1 : 0);
+  const groups = [];
+  by.forEach(list => {
+    if (list.length < 2) return;
+    list = [...list].sort((a, b) => (yr(b.lahir) ? 1 : 0) - (yr(a.lahir) ? 1 : 0));   // yang punya tahun lahir jadi jangkar
+    const used = new Set();
+    list.forEach((p, i) => {
+      if (used.has(p.id)) return;
+      let cl = [p]; used.add(p.id);
+      list.forEach((q, j) => { if (j !== i && !used.has(q.id) && (!yr(p.lahir) || !yr(q.lahir) || yr(p.lahir) === yr(q.lahir))) { cl.push(q); used.add(q.id); } });
+      if (cl.length < 2) return;
+      const keep = cl.reduce((b, x) => weight(x) > weight(b) ? x : b, cl[0]);
+      const forbid = mergeForbidden(keep.id);
+      cl = [keep, ...cl.filter(x => x.id !== keep.id && !forbid.has(x.id))];
+      if (cl.length < 2) return;
+      groups.push({ keep, members: cl, strong: cl.every(x => yr(x.lahir) && yr(x.lahir) === yr(cl[0].lahir)), depth: Math.min(...cl.map(x => genDepth(x.id))) });
+    });
+  });
+  return groups.sort((a, b) => a.depth - b.depth || a.keep.nama.localeCompare(b.keep.nama));
+}
+function dupsForm() {
+  const gs = findDupGroups();
+  const m = openModal(`<form id="df">
+    <div class="mh"><h2>Cari duplikat</h2><button class="x" type="button" data-act="close" aria-label="Tutup">✕</button></div>
+    <div class="note">Mencari orang dengan <b>nama dan jenis kelamin sama</b>. <span class="pill ok">Pasti</span> = tahun lahir juga sama, <span class="pill maybe">Mungkin</span> = tahun lahir salah satunya kosong.
+      Centang yang benar-benar orang yang sama. Data digabungkan dari generasi teratas lebih dulu, dan data yang dipertahankan ditandai ★.</div>
+    ${gs.length ? gs.map((g, i) => `<label class="dg"><div class="dgh"><input type="checkbox" name="g" value="${i}" ${g.strong ? 'checked' : ''}>
+      ${esc(g.keep.nama)} <span class="pill ${g.strong ? 'ok' : 'maybe'}">${g.strong ? 'Pasti' : 'Mungkin'}</span><span class="tag">${g.members.length} data</span></div>
+      <div class="dgl">${g.members.map((x, j) => `<div>${j === 0 ? '★ ' : '• '}${esc(personDesc(x))}</div>`).join('')}</div></label>`).join('')
+      : '<div class="tag" style="padding:8px 2px 14px">Tidak ditemukan orang dengan nama yang sama.</div>'}
+    <div class="err" id="derr"></div>
+    <div class="acts">${gs.length ? '<button class="btn primary" type="submit" id="dsave">Gabungkan yang dicentang</button>' : ''}<button class="btn" type="button" data-act="close">Tutup</button></div></form>`);
+  $('#df', m).onsubmit = async e => {
+    e.preventDefault();
+    const pick = [...m.querySelectorAll('input[name=g]:checked')].map(c => gs[+c.value]);
+    if (!pick.length) { $('#derr', m).textContent = 'Centang minimal satu.'; return; }
+    if (!confirm(`Gabungkan ${pick.length} kelompok orang yang sama? Orang yang bukan ★ akan dihapus dan datanya dipindahkan ke yang ★.\n\nDisarankan menekan "Cadangan" lebih dulu.`)) return;
+    $('#dsave', m).disabled = true; let done = 0;
+    for (const g of pick) {
+      for (const o of g.members.slice(1)) {
+        if (!IDX.p.has(g.keep.id) || !IDX.p.has(o.id) || mergeForbidden(g.keep.id).has(o.id)) continue;
+        if (await doMerge(g.keep.id, o.id, true)) done++;
+      }
+    }
+    toast(`${done} data digabungkan`); closeModal(); state.fit = true; render();
+  };
+}
+$('#dups').onclick = dupsForm;
+
 /* ---------- Gabungkan orang yang sama (duplikat) ---------- */
 function mergeForbidden(keepId) {
   const f = new Set([keepId, ...descendants(keepId)]);
@@ -1409,8 +1484,8 @@ $('#empty-seed').onclick = async () => {
   document.title = CONFIG.TITLE;
   $('#login-title').textContent = CONFIG.TITLE; $('#app-title').textContent = CONFIG.TITLE;
   if (!CONFIG.SCRIPT_URL) { $('#demo-note').hidden = false; return; }
-  const saved = sessionStorage.getItem('ft_pw');
-  if (saved) loginRemote(saved).catch(() => sessionStorage.removeItem('ft_pw'));
+  const saved = ss.get('ft_pw');
+  if (saved) loginRemote(saved).catch(() => ss.del('ft_pw'));
 })();
 </script>
 </body>
